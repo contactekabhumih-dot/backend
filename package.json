@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "build": "echo 'No build required for backend'"
+    "build": "npm install"
   },
   "dependencies": {
     "cors": "^2.8.5",
