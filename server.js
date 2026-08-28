@@ -54,7 +54,7 @@ initEmailTransporter();
 
 const app = express();
 app.use(cors({
-  origin: process.env.FRONTEND_ORIGIN || "http://localhost:5173",
+  origin: true,
   credentials: true
 }));
 app.use(express.json());
@@ -477,9 +477,41 @@ function makeOrderId(sequence) {
   return `#EB${suffix}`;
 }
 
+const SESSION_SECRET = process.env.JWT_SECRET || process.env.ADMIN_PASSWORD || "ekabhumih_admin_secret_key_2026";
+
+function generateAdminToken(email) {
+  const timestamp = Date.now();
+  const payload = `${email}:${timestamp}`;
+  const signature = crypto.createHmac("sha256", SESSION_SECRET).update(payload).digest("hex");
+  return Buffer.from(`${payload}:${signature}`).toString("base64url");
+}
+
+function verifyAdminToken(token) {
+  if (!token) return false;
+  try {
+    if (sessions.has(token)) return true;
+
+    const decoded = Buffer.from(token, "base64url").toString("utf8");
+    const parts = decoded.split(":");
+    if (parts.length !== 3) return false;
+    const [email, timestamp, signature] = parts;
+
+    const expectedSignature = crypto.createHmac("sha256", SESSION_SECRET).update(`${email}:${timestamp}`).digest("hex");
+    if (signature !== expectedSignature) return false;
+
+    const age = Date.now() - Number(timestamp);
+    if (isNaN(age) || age < 0 || age > 30 * 24 * 60 * 60 * 1000) return false;
+
+    sessions.add(token);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
 function auth(req, res, next) {
   const token = req.headers.authorization?.replace("Bearer ", "");
-  if (!token || !sessions.has(token)) {
+  if (!token || !verifyAdminToken(token)) {
     return res.status(401).json({ error: "Unauthorized" });
   }
   next();
@@ -734,7 +766,7 @@ app.post("/api/admin/login", (req, res) => {
   if (!isEmailMatch || password !== validPassword) {
     return res.status(401).json({ error: "Invalid admin credentials. Use contact.ekabhumih@gmail.com / admin123password" });
   }
-  const token = crypto.randomBytes(24).toString("hex");
+  const token = generateAdminToken(inputEmail);
   sessions.add(token);
   res.json({ success: true, token, email: inputEmail });
 });
