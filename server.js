@@ -2,6 +2,8 @@ const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 const Razorpay = require("razorpay");
 const nodemailer = require("nodemailer");
 require("dotenv").config();
@@ -68,8 +70,10 @@ const productSchema = new mongoose.Schema({
   description: { type: String, default: "" },
   sku: { type: String, default: "EB-RED-50G" },
   price: { type: Number, required: true },
-  originalPrice: { type: Number, default: 0 },
-  discountPercent: { type: Number, default: 0 },
+  sellingPrice: { type: Number, default: 1018 },
+  originalPrice: { type: Number, default: 1499 },
+  discountPercent: { type: Number, default: 32 },
+  priceSource: { type: String, default: "DATABASE" },
   netWeight: { type: String, default: "50g" },
   rating: { type: Number, default: 4.8 },
   reviewsCount: { type: Number, default: 124 },
@@ -188,14 +192,16 @@ const EmailLog = mongoose.model("EmailLog", emailLogSchema);
 const EmailCampaign = mongoose.model("EmailCampaign", emailCampaignSchema);
 const Offer = mongoose.model("Offer", offerSchema);
 
-const fallbackProduct = {
+const PRODUCT_DATA_FILE = path.join(__dirname, "product_data.json");
+
+let fallbackProduct = {
   _id: "fallback-product",
   name: "Redensyl Hair Growth Concentrate",
   subtitle: "Powered by 3% Redensyl, Baicapil and Anagain",
   description: "A clinically backed blend designed to reduce hair fall, strengthen roots and encourage new growth.",
-  price: 419,
-  originalPrice: 599,
-  discountPercent: 30,
+  price: 1018,
+  originalPrice: 1499,
+  discountPercent: 32,
   netWeight: "50g",
   rating: 4.8,
   reviewsCount: 124,
@@ -222,6 +228,33 @@ const fallbackProduct = {
   ],
   isBestseller: true
 };
+
+function loadPersistedProduct() {
+  try {
+    if (fs.existsSync(PRODUCT_DATA_FILE)) {
+      const raw = fs.readFileSync(PRODUCT_DATA_FILE, "utf8");
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.price === "number") {
+        fallbackProduct = { ...fallbackProduct, ...parsed };
+        if (fallbackProduct.originalPrice > 0 && fallbackProduct.originalPrice > fallbackProduct.price) {
+          fallbackProduct.discountPercent = Math.round(((fallbackProduct.originalPrice - fallbackProduct.price) / fallbackProduct.originalPrice) * 100);
+        }
+        console.log(`[STORAGE] Loaded persisted product data from disk: ₹${fallbackProduct.price} (Original ₹${fallbackProduct.originalPrice})`);
+      }
+    }
+  } catch (err) {
+    console.warn("[STORAGE] Could not load product_data.json:", err.message);
+  }
+}
+loadPersistedProduct();
+
+function savePersistedProduct(productObj) {
+  try {
+    fs.writeFileSync(PRODUCT_DATA_FILE, JSON.stringify(productObj, null, 2), "utf8");
+  } catch (err) {
+    console.warn("[STORAGE] Could not save product_data.json:", err.message);
+  }
+}
 
 let fallbackCoupons = [
   { _id: "c1", code: "WELCOME10", discountPercent: 10, flatDiscount: 0, minOrderValue: 0, usageLimit: 500, startDate: "2026-01-01", expiryDate: "2026-12-31", active: true },
@@ -461,15 +494,81 @@ async function connectDb() {
   }
 }
 
+async function initializeApplication() {
+  console.log("[DATA] Initializing application persistence...");
+  await connectDb();
+
+  // Load disk persistence
+  loadPersistedProduct();
+
+  if (dbReady) {
+    console.log("[DATA] Database connected");
+    const existingProduct = await Product.findOne();
+    if (existingProduct) {
+      console.log(`[DATA] Existing product found. Preserved admin product data: Selling ₹${existingProduct.price}, Original ₹${existingProduct.originalPrice}`);
+      console.log("[DATA SAFETY] No seed overwrite performed");
+    } else {
+      console.log("[DATA] No existing product found in DB. Seeding initial product record...");
+      await Product.create(fallbackProduct);
+      console.log(`[DATA] Initial product created: Selling ₹${fallbackProduct.price}, Original ₹${fallbackProduct.originalPrice}`);
+    }
+
+    const couponCount = await Coupon.countDocuments();
+    if (couponCount === 0) {
+      await Coupon.insertMany(fallbackCoupons);
+      console.log("[DATA] Initial coupons created");
+    } else {
+      console.log(`[DATA] Existing coupons found (${couponCount}). Preserved.`);
+    }
+
+    const offerCount = await Offer.countDocuments();
+    if (offerCount === 0) {
+      await Offer.insertMany(fallbackOffers);
+      console.log("[DATA] Initial offers created");
+    } else {
+      console.log(`[DATA] Existing offers found (${offerCount}). Preserved.`);
+    }
+  } else {
+    console.log(`[DATA] Operating with persistent disk storage: Selling ₹${fallbackProduct.price}, Original ₹${fallbackProduct.originalPrice}`);
+    console.log("[DATA SAFETY] Admin product preserved from disk storage. No seed overwrite performed.");
+  }
+}
+
+async function resetDemoData(explicitAction = false) {
+  if (process.env.NODE_ENV !== "development" || process.env.RUN_SEED !== "true" || !explicitAction) {
+    console.warn("[DATA SAFETY] BLOCKED OVERWRITE. Reason: Automatic seed reset disabled in non-development environment or without explicit confirmation.");
+    return { success: false, error: "Automatic data resets are disabled. RUN_SEED=true and NODE_ENV=development are required." };
+  }
+  console.log("[DATA SAFETY] EXPLICIT RESET CONFIRMED. Re-seeding demo product...");
+  return { success: true, message: "Demo data reset" };
+}
+
 async function ensureProduct() {
+  fallbackProduct.sellingPrice = fallbackProduct.price || 1018;
+  fallbackProduct.priceSource = "DATABASE";
+
+  if (fallbackProduct.originalPrice > 0 && fallbackProduct.originalPrice > fallbackProduct.price) {
+    fallbackProduct.discountPercent = Math.round(((fallbackProduct.originalPrice - fallbackProduct.price) / fallbackProduct.originalPrice) * 100);
+  }
+
   if (!dbReady) return fallbackProduct;
+
   const count = await Product.countDocuments();
   if (count === 0) {
     const created = await Product.create(fallbackProduct);
-    return created.toObject();
+    const obj = created.toObject();
+    obj.sellingPrice = obj.price;
+    obj.priceSource = "DATABASE";
+    return obj;
   }
   const product = await Product.findOne();
-  return product.toObject();
+  const obj = product.toObject();
+  obj.sellingPrice = obj.price;
+  obj.priceSource = "DATABASE";
+  if (obj.originalPrice > 0 && obj.originalPrice > obj.price) {
+    obj.discountPercent = Math.round(((obj.originalPrice - obj.price) / obj.originalPrice) * 100);
+  }
+  return obj;
 }
 
 function makeOrderId(sequence) {
@@ -696,7 +795,7 @@ app.post("/api/orders", async (req, res) => {
 app.post("/api/payment/create-order", async (req, res) => {
   try {
     const { amount, currency = "INR", receipt } = req.body;
-    const amountInPaisa = Math.round((amount || 419) * 100);
+    const amountInPaisa = Math.round((amount || fallbackProduct.price || 1018) * 100);
 
     if (razorpay) {
       try {
@@ -1296,8 +1395,34 @@ app.get("/api/admin/product/revisions", auth, async (req, res) => {
 
 app.put("/api/admin/product", auth, async (req, res) => {
   try {
+    const rawPrice = req.body.price ?? req.body.sellingPrice ?? 1018;
+    const rawOrig = req.body.originalPrice ?? 1499;
+
+    const price = Number(rawPrice);
+    const originalPrice = Number(rawOrig);
+
+    if (isNaN(price) || price < 0) {
+      return res.status(400).json({ error: "Invalid selling price. Price must be a non-negative number." });
+    }
+    if (isNaN(originalPrice) || originalPrice < 0) {
+      return res.status(400).json({ error: "Invalid original price. Price must be a non-negative number." });
+    }
+    if (originalPrice > 0 && price > originalPrice) {
+      return res.status(400).json({ error: "Selling price cannot be higher than original price." });
+    }
+
+    let discountPercent = 0;
+    if (originalPrice > 0 && originalPrice > price) {
+      discountPercent = Math.round(((originalPrice - price) / originalPrice) * 100);
+    }
+
     const updateData = {
       ...req.body,
+      price,
+      sellingPrice: price,
+      originalPrice,
+      discountPercent,
+      priceSource: "DATABASE",
       updatedBy: req.body.updatedBy || "admin@ekabhumih.com"
     };
 
@@ -1309,19 +1434,30 @@ app.put("/api/admin/product", auth, async (req, res) => {
         product = await Product.findByIdAndUpdate(product._id, updateData, { new: true });
       }
 
+      const obj = product.toObject();
+      obj.sellingPrice = obj.price;
+      obj.priceSource = "DATABASE";
+
+      fallbackProduct = obj;
+      savePersistedProduct(fallbackProduct);
+
       // Record Revision History
       await ProductRevision.create({
         productId: String(product._id),
         changedBy: updateData.updatedBy,
         productName: product.name,
         price: product.price,
-        snapshot: product.toObject()
+        snapshot: obj
       });
 
-      return res.json(product);
+      return res.json(obj);
     }
 
     Object.assign(fallbackProduct, updateData);
+    fallbackProduct.sellingPrice = fallbackProduct.price;
+    fallbackProduct.priceSource = "DATABASE";
+    savePersistedProduct(fallbackProduct);
+
     const revEntry = {
       _id: crypto.randomUUID(),
       productId: fallbackProduct._id,
@@ -1391,6 +1527,6 @@ app.delete("/api/admin/coupons/:code", auth, async (req, res) => {
   }
 });
 
-connectDb().finally(() => {
-  app.listen(PORT, () => console.log(`API running on http://localhost:${PORT}`));
+initializeApplication().finally(() => {
+  app.listen(PORT, () => console.log(`[API] Server running on http://localhost:${PORT}`));
 });
