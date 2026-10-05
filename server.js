@@ -914,8 +914,8 @@ app.get("/api/admin/orders", auth, async (req, res) => {
   }
 });
 
-/* CUSTOMER MY ORDERS ENDPOINT */
-app.get("/api/orders/my-orders", async (req, res) => {
+/* CUSTOMER MY ORDERS ENDPOINTS */
+app.get(["/api/orders/my-orders", "/api/user/orders", "/api/orders/customer"], async (req, res) => {
   try {
     const { email } = req.query;
     if (!email) return res.status(400).json({ error: "Email parameter is required." });
@@ -928,6 +928,31 @@ app.get("/api/orders/my-orders", async (req, res) => {
 
     const userOrders = fallbackOrders.filter(o => String(o.customer?.email || "").trim().toLowerCase() === cleanEmail);
     return res.json(userOrders);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/orders", async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (email) {
+      const cleanEmail = String(email).trim().toLowerCase();
+      if (dbReady) {
+        const userOrders = await Order.find({ "customer.email": { $regex: new RegExp(`^${cleanEmail}$`, "i") } }).sort({ createdAt: -1 });
+        return res.json(userOrders);
+      }
+      const userOrders = fallbackOrders.filter(o => String(o.customer?.email || "").trim().toLowerCase() === cleanEmail);
+      return res.json(userOrders);
+    }
+
+    const token = req.headers.authorization?.replace("Bearer ", "");
+    if (token && verifyAdminToken(token)) {
+      if (dbReady) return res.json(await Order.find().sort({ createdAt: -1 }));
+      return res.json(fallbackOrders);
+    }
+
+    return res.status(400).json({ error: "Email parameter is required or valid admin authorization token." });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
