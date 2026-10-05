@@ -28,21 +28,40 @@ let lastEmailSuccess = null;
 let lastEmailFailed = null;
 
 function initEmailTransporter() {
-  const host = process.env.EMAIL_HOST;
+  const host = process.env.EMAIL_HOST || "smtp.gmail.com";
   const port = Number(process.env.EMAIL_PORT || 587);
-  const user = process.env.EMAIL_USER;
-  const pass = process.env.EMAIL_PASSWORD;
+  const user = process.env.EMAIL_USER || "contact.ekabhumih@gmail.com";
+  const rawPass = process.env.EMAIL_PASSWORD || "";
+  const pass = rawPass ? rawPass.replace(/\s+/g, "") : "";
 
   if (host && user && pass) {
     try {
-      emailTransporter = nodemailer.createTransport({
-        host,
-        port,
-        secure: port === 465,
-        auth: { user, pass }
-      });
+      const isGmail = host.includes("gmail");
+      const config = isGmail
+        ? {
+            service: "gmail",
+            auth: { user, pass },
+            tls: { rejectUnauthorized: false }
+          }
+        : {
+            host,
+            port,
+            secure: port === 465,
+            auth: { user, pass },
+            tls: { rejectUnauthorized: false }
+          };
+
+      emailTransporter = nodemailer.createTransport(config);
       isEmailConfigured = true;
-      console.log(`[SMTP] Email Transporter ready (${user} via ${host}:${port})`);
+      console.log(`[SMTP] Email Transporter initialized for (${user})`);
+
+      emailTransporter.verify((error, success) => {
+        if (error) {
+          console.warn("[SMTP] Nodemailer verification warning:", error.message);
+        } else {
+          console.log("[SMTP] Email Server ready to send messages!");
+        }
+      });
     } catch (err) {
       console.warn("[SMTP] Failed to initialize Nodemailer transporter:", err.message);
       isEmailConfigured = false;
@@ -790,7 +809,7 @@ app.post("/api/payment/verify", async (req, res) => {
 
 app.post("/api/orders", async (req, res) => {
   try {
-    const { customer, items, totalAmount, discountAmount = 0, couponCode = "", paymentMethod = "COD" } = req.body;
+    const { customer, items, totalAmount, discountAmount = 0, couponCode = "", paymentMethod = "COD", paymentStatus } = req.body;
     if (!customer?.name || !customer?.phone || !customer?.address || !customer?.city || !customer?.pincode) {
       return res.status(400).json({ error: "Complete shipping details are required." });
     }
@@ -804,10 +823,11 @@ app.post("/api/orders", async (req, res) => {
 
     const orderCount = dbReady ? await Order.countDocuments() : fallbackOrders.length;
     const orderId = makeOrderId(orderCount + 1001);
+    const initialStatus = (paymentStatus === "PAID" || paymentMethod === "Razorpay") ? "Confirmed" : "Pending";
 
     let createdOrder;
     if (dbReady) {
-      createdOrder = await Order.create({ orderId, customer, items, totalAmount, discountAmount, couponCode, paymentMethod });
+      createdOrder = await Order.create({ orderId, customer, items, totalAmount, discountAmount, couponCode, paymentMethod, paymentStatus: paymentStatus || (paymentMethod === "Razorpay" ? "PAID" : "Pending"), status: initialStatus });
       createdOrder = createdOrder.toObject();
     } else {
       createdOrder = {
@@ -819,21 +839,22 @@ app.post("/api/orders", async (req, res) => {
         discountAmount,
         couponCode,
         paymentMethod,
-        status: "Pending",
+        paymentStatus: paymentStatus || (paymentMethod === "Razorpay" ? "PAID" : "Pending"),
+        status: initialStatus,
         createdAt: new Date().toISOString()
       };
       fallbackOrders.unshift(createdOrder);
       savePersistedOrders(fallbackOrders);
     }
 
-    // Trigger instant order confirmation email
+    // Trigger instant order confirmation email with accurate status
     if (customer.email && customer.email.includes("@")) {
-      const emailData = buildOrderStatusEmail(createdOrder, "Pending");
+      const emailData = buildOrderStatusEmail(createdOrder, initialStatus);
       sendServerEmail({
         to: customer.email,
-        subject: `Order Confirmation ${createdOrder.orderId} - Eka Bhūmih`,
+        subject: emailData.subject,
         html: emailData.html,
-        emailType: "ORDER_CONFIRMATION",
+        emailType: initialStatus === "Confirmed" ? "ORDER_CONFIRMED" : "ORDER_CONFIRMATION",
         orderId: createdOrder.orderId
       }).catch(err => console.warn("[EMAIL] Order creation confirmation email error:", err.message));
     }
@@ -1118,16 +1139,18 @@ app.patch("/api/admin/orders/:id/status", auth, async (req, res) => {
       );
     }
 
+    const fbOrder = fallbackOrders.find(o => 
+      String(o._id) === reqId || 
+      String(o.orderId) === reqId ||
+      String(o.orderId) === `#${reqId.replace(/^#/, "")}`
+    );
+    if (fbOrder) {
+      fbOrder.status = status;
+      savePersistedOrders(fallbackOrders);
+    }
+
     if (!order) {
-      order = fallbackOrders.find(o => 
-        String(o._id) === reqId || 
-        String(o.orderId) === reqId ||
-        String(o.orderId) === `#${reqId.replace(/^#/, "")}`
-      );
-      if (order) {
-        order.status = status;
-        savePersistedOrders(fallbackOrders);
-      }
+      order = fbOrder;
     }
 
     if (!order) return res.status(404).json({ error: `Order '${reqId}' not found` });
