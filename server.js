@@ -330,7 +330,8 @@ function generateBrandedEmailHtml({ title, preheader = "", bodyHtml, recipientEm
 
 function buildOrderStatusEmail(order, newStatus) {
   const customerName = order.customer?.name || "Valued Customer";
-  const orderId = order.orderId || "Order";
+  const rawOrderId = order.orderId || "Order";
+  const displayOrderId = String(rawOrderId).startsWith("#") ? rawOrderId : `#${rawOrderId}`;
   const total = `₹${(order.totalAmount || 0).toLocaleString("en-IN")}`;
   const address = `${order.customer?.address || ""}, ${order.customer?.city || ""} - ${order.customer?.pincode || ""}`;
   const itemsHtml = (order.items || []).map(item => `
@@ -340,21 +341,24 @@ function buildOrderStatusEmail(order, newStatus) {
     </div>
   `).join("");
 
-  let title = `Update on Your Eka Bhūmih Order #${orderId}`;
+  let title = `Update on Your Eka Bhūmih Order ${displayOrderId}`;
   let statusNotice = "";
 
   if (newStatus === "Confirmed") {
-    title = `Your Eka Bhūmih Order #${orderId} Has Been Confirmed`;
+    title = `Your Eka Bhūmih Order ${displayOrderId} Has Been Confirmed`;
     statusNotice = `<p style="font-size:14px; color:#2f6b38; background:#eef5eb; padding:12px 16px; border-radius:8px; border-left:4px solid #2f6b38;">Your order has been confirmed and is being prepared for dispatch.</p>`;
   } else if (newStatus === "Shipped") {
-    title = `Your Eka Bhūmih Order #${orderId} Has Been Shipped`;
-    statusNotice = `<p style="font-size:14px; color:#2f6b38; background:#eef5eb; padding:12px 16px; border-radius:8px; border-left:4px solid #2f6b38;">Your order is on its way to your address.</p>`;
+    title = `Your Eka Bhūmih Order ${displayOrderId} Has Been Shipped`;
+    statusNotice = `<p style="font-size:14px; color:#2f6b38; background:#eef5eb; padding:12px 16px; border-radius:8px; border-left:4px solid #2f6b38;">Your order is on its way to your shipping address.</p>`;
   } else if (newStatus === "Delivered") {
-    title = `Your Eka Bhūmih Order #${orderId} Has Been Delivered`;
+    title = `Your Eka Bhūmih Order ${displayOrderId} Has Been Delivered`;
     statusNotice = `<p style="font-size:14px; color:#2f6b38; background:#eef5eb; padding:12px 16px; border-radius:8px; border-left:4px solid #2f6b38;">Your order has been successfully delivered. Thank you for choosing Eka Bhūmih.</p>`;
   } else if (newStatus === "Cancelled") {
-    title = `Update on Your Eka Bhūmih Order #${orderId}`;
-    statusNotice = `<p style="font-size:14px; color:#900; background:#fdf2f2; padding:12px 16px; border-radius:8px; border-left:4px solid #d32f2f;">Your order #${orderId} has been cancelled.</p>`;
+    title = `Update on Your Eka Bhūmih Order ${displayOrderId}`;
+    statusNotice = `<p style="font-size:14px; color:#900; background:#fdf2f2; padding:12px 16px; border-radius:8px; border-left:4px solid #d32f2f;">Your order ${displayOrderId} has been cancelled.</p>`;
+  } else if (newStatus === "Pending") {
+    title = `Your Eka Bhūmih Order ${displayOrderId} Status: Pending`;
+    statusNotice = `<p style="font-size:14px; color:#d97706; background:#fffbe6; padding:12px 16px; border-radius:8px; border-left:4px solid #d97706;">Your order status has been updated to Pending while we process your details.</p>`;
   }
 
   const bodyHtml = `
@@ -362,7 +366,7 @@ function buildOrderStatusEmail(order, newStatus) {
     ${statusNotice}
     <div style="margin:20px 0; padding:16px; background:#faf8f3; border:1px solid #e8e3d8; border-radius:8px;">
       <h3 style="margin-top:0; font-size:13px; text-transform:uppercase; letter-spacing:1px; color:#6b7c6d;">Order Information</h3>
-      <p style="margin:4px 0;"><strong>Order ID:</strong> #${orderId}</p>
+      <p style="margin:4px 0;"><strong>Order ID:</strong> ${displayOrderId}</p>
       <p style="margin:4px 0;"><strong>Status:</strong> ${newStatus}</p>
       <p style="margin:4px 0;"><strong>Total Amount:</strong> ${total}</p>
       <p style="margin:4px 0;"><strong>Shipping Address:</strong> ${address}</p>
@@ -910,6 +914,25 @@ app.get("/api/admin/orders", auth, async (req, res) => {
   }
 });
 
+/* CUSTOMER MY ORDERS ENDPOINT */
+app.get("/api/orders/my-orders", async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ error: "Email parameter is required." });
+    const cleanEmail = String(email).trim().toLowerCase();
+
+    if (dbReady) {
+      const userOrders = await Order.find({ "customer.email": { $regex: new RegExp(`^${cleanEmail}$`, "i") } }).sort({ createdAt: -1 });
+      return res.json(userOrders);
+    }
+
+    const userOrders = fallbackOrders.filter(o => String(o.customer?.email || "").trim().toLowerCase() === cleanEmail);
+    return res.json(userOrders);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /* PUBLIC SUBSCRIBER ENDPOINTS */
 app.post("/api/subscribe", async (req, res) => {
   try {
@@ -997,7 +1020,7 @@ app.get("/api/subscribers/unsubscribe", async (req, res) => {
 /* ADMIN ORDER STATUS UPDATE & REAL EMAIL NOTIFICATION */
 app.patch("/api/admin/orders/:id/status", auth, async (req, res) => {
   try {
-    const { status, sendEmail = false } = req.body;
+    const { status, sendEmail = true } = req.body;
     const allowed = ["Pending", "Confirmed", "Shipped", "Delivered", "Cancelled"];
     if (!allowed.includes(status)) return res.status(400).json({ error: "Invalid status" });
 
