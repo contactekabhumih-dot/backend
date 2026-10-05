@@ -285,6 +285,32 @@ let fallbackOffers = [
 
 let dbReady = false;
 let fallbackOrders = [];
+const ORDERS_DATA_FILE = path.join(__dirname, "orders_data.json");
+
+function loadPersistedOrders() {
+  try {
+    if (fs.existsSync(ORDERS_DATA_FILE)) {
+      const raw = fs.readFileSync(ORDERS_DATA_FILE, "utf8");
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        fallbackOrders = parsed;
+        console.log(`[STORAGE] Loaded ${fallbackOrders.length} persisted orders from disk.`);
+      }
+    }
+  } catch (err) {
+    console.warn("[STORAGE] Could not load orders_data.json:", err.message);
+  }
+}
+loadPersistedOrders();
+
+function savePersistedOrders(ordersArr) {
+  try {
+    fs.writeFileSync(ORDERS_DATA_FILE, JSON.stringify(ordersArr, null, 2), "utf8");
+  } catch (err) {
+    console.warn("[STORAGE] Could not save orders_data.json:", err.message);
+  }
+}
+
 const sessions = new Set();
 
 /* EMAIL ENGINE & HTML TEMPLATES */
@@ -768,28 +794,47 @@ app.post("/api/orders", async (req, res) => {
       return res.status(400).json({ error: "At least one item is required." });
     }
 
+    if (customer.email) {
+      customer.email = String(customer.email).trim().toLowerCase();
+    }
+
     const orderCount = dbReady ? await Order.countDocuments() : fallbackOrders.length;
     const orderId = makeOrderId(orderCount + 1001);
 
+    let createdOrder;
     if (dbReady) {
-      const order = await Order.create({ orderId, customer, items, totalAmount, discountAmount, couponCode, paymentMethod });
-      return res.status(201).json({ success: true, order });
+      createdOrder = await Order.create({ orderId, customer, items, totalAmount, discountAmount, couponCode, paymentMethod });
+      createdOrder = createdOrder.toObject();
+    } else {
+      createdOrder = {
+        _id: crypto.randomUUID(),
+        orderId,
+        customer,
+        items,
+        totalAmount,
+        discountAmount,
+        couponCode,
+        paymentMethod,
+        status: "Pending",
+        createdAt: new Date().toISOString()
+      };
+      fallbackOrders.unshift(createdOrder);
+      savePersistedOrders(fallbackOrders);
     }
 
-    const order = {
-      _id: crypto.randomUUID(),
-      orderId,
-      customer,
-      items,
-      totalAmount,
-      discountAmount,
-      couponCode,
-      paymentMethod,
-      status: "Pending",
-      createdAt: new Date().toISOString()
-    };
-    fallbackOrders.unshift(order);
-    return res.status(201).json({ success: true, order });
+    // Trigger instant order confirmation email
+    if (customer.email && customer.email.includes("@")) {
+      const emailData = buildOrderStatusEmail(createdOrder, "Pending");
+      sendServerEmail({
+        to: customer.email,
+        subject: `Order Confirmation ${createdOrder.orderId} - Eka Bhūmih`,
+        html: emailData.html,
+        emailType: "ORDER_CONFIRMATION",
+        orderId: createdOrder.orderId
+      }).catch(err => console.warn("[EMAIL] Order creation confirmation email error:", err.message));
+    }
+
+    return res.status(201).json({ success: true, order: createdOrder });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -1049,15 +1094,35 @@ app.patch("/api/admin/orders/:id/status", auth, async (req, res) => {
     const allowed = ["Pending", "Confirmed", "Shipped", "Delivered", "Cancelled"];
     if (!allowed.includes(status)) return res.status(400).json({ error: "Invalid status" });
 
+    const reqId = String(req.params.id || "").trim();
     let order;
+
     if (dbReady) {
-      order = await Order.findByIdAndUpdate(req.params.id, { status }, { new: true });
-    } else {
-      order = fallbackOrders.find(o => o._id === req.params.id);
-      if (order) order.status = status;
+      if (mongoose.Types.ObjectId.isValid(reqId)) {
+        order = await Order.findByIdAndUpdate(reqId, { status }, { new: true });
+      }
+      if (!order) {
+        order = await Order.findOneAndUpdate(
+          { $or: [{ orderId: reqId }, { orderId: `#${reqId.replace(/^#/, "")}` }, { _id: reqId }] },
+          { status },
+          { new: true }
+        );
+      }
     }
 
-    if (!order) return res.status(404).json({ error: "Order not found" });
+    if (!order) {
+      order = fallbackOrders.find(o => 
+        String(o._id) === reqId || 
+        String(o.orderId) === reqId ||
+        String(o.orderId) === `#${reqId.replace(/^#/, "")}`
+      );
+      if (order) {
+        order.status = status;
+        savePersistedOrders(fallbackOrders);
+      }
+    }
+
+    if (!order) return res.status(404).json({ error: `Order '${reqId}' not found` });
 
     let emailResult = null;
 
@@ -1067,7 +1132,7 @@ app.patch("/api/admin/orders/:id/status", auth, async (req, res) => {
           success: false,
           emailSent: false,
           status: "No_Email",
-          message: "Customer email unavailable"
+          message: "Customer email unavailable for this order"
         };
       } else {
         const emailData = buildOrderStatusEmail(order, status);
@@ -1081,13 +1146,14 @@ app.patch("/api/admin/orders/:id/status", auth, async (req, res) => {
         if (emailResult.emailSent) {
           order.emailSentAt = new Date();
           if (dbReady) await order.save();
+          else savePersistedOrders(fallbackOrders);
         }
       }
     } else {
       emailResult = {
         success: true,
         emailSent: false,
-        message: "Status updated without email notification."
+        message: "Status updated without sending email notification."
       };
     }
 
@@ -1099,12 +1165,30 @@ app.patch("/api/admin/orders/:id/status", auth, async (req, res) => {
 
 app.post("/api/admin/orders/:id/resend-email", auth, async (req, res) => {
   try {
+    const reqId = String(req.params.id || "").trim();
     let order;
-    if (dbReady) order = await Order.findById(req.params.id);
-    else order = fallbackOrders.find(o => o._id === req.params.id);
+
+    if (dbReady) {
+      if (mongoose.Types.ObjectId.isValid(reqId)) {
+        order = await Order.findById(reqId);
+      }
+      if (!order) {
+        order = await Order.findOne({
+          $or: [{ orderId: reqId }, { orderId: `#${reqId.replace(/^#/, "")}` }, { _id: reqId }]
+        });
+      }
+    }
+
+    if (!order) {
+      order = fallbackOrders.find(o => 
+        String(o._id) === reqId || 
+        String(o.orderId) === reqId ||
+        String(o.orderId) === `#${reqId.replace(/^#/, "")}`
+      );
+    }
 
     if (!order) return res.status(404).json({ error: "Order not found" });
-    if (!order.customer?.email) return res.status(400).json({ error: "Customer email unavailable" });
+    if (!order.customer?.email) return res.status(400).json({ error: "Customer email unavailable for this order" });
 
     const emailData = buildOrderStatusEmail(order, order.status || "Confirmed");
     const result = await sendServerEmail({
@@ -1118,6 +1202,7 @@ app.post("/api/admin/orders/:id/resend-email", auth, async (req, res) => {
     if (result.emailSent) {
       order.emailSentAt = new Date();
       if (dbReady) await order.save();
+      else savePersistedOrders(fallbackOrders);
     }
 
     return res.json({ success: result.success, order, emailResult: result });
