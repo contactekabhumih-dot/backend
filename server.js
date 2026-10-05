@@ -443,9 +443,11 @@ function buildOrderStatusEmail(order, newStatus) {
 }
 
 async function sendServerEmail({ to, subject, html, emailType, orderId = "", campaignId = "" }) {
-  const fromAddress = process.env.EMAIL_FROM || '"Eka Bhūmih" <bhumihlifestyle@gmail.com>';
+  const fromAddress = process.env.EMAIL_FROM || '"Eka Bhūmih" <contact.ekabhumih@gmail.com>';
+  console.log(`[SMTP LOG] sendServerEmail called. To: "${to}", Type: "${emailType}", Order: "${orderId}"`);
 
   if (!to || !to.includes("@")) {
+    console.warn(`[SMTP LOG] Cancelled: Recipient email address unavailable or invalid: "${to}"`);
     return {
       success: false,
       emailSent: false,
@@ -456,6 +458,7 @@ async function sendServerEmail({ to, subject, html, emailType, orderId = "", cam
   }
 
   if (!isEmailConfigured || !emailTransporter) {
+    console.warn(`[SMTP LOG] Cancelled: Email service not configured (isEmailConfigured=${isEmailConfigured}, hasTransporter=${Boolean(emailTransporter)})`);
     const logEntry = {
       _id: crypto.randomUUID(),
       orderId,
@@ -465,7 +468,7 @@ async function sendServerEmail({ to, subject, html, emailType, orderId = "", cam
       subject,
       status: "Not_Configured",
       providerMessageId: "",
-      error: "Email service is not configured (EMAIL_PASSWORD missing in backend/.env)",
+      error: "Email service is not configured (EMAIL_PASSWORD missing in environment variables)",
       sentAt: new Date()
     };
 
@@ -478,11 +481,12 @@ async function sendServerEmail({ to, subject, html, emailType, orderId = "", cam
       success: false,
       emailSent: false,
       status: "Not_Configured",
-      message: "Email service is not configured"
+      message: "Email service is not configured on server (EMAIL_PASSWORD missing in Render environment variables)"
     };
   }
 
   try {
+    console.log(`[SMTP LOG] Attempting sendMail to ${to}...`);
     const info = await emailTransporter.sendMail({
       from: fromAddress,
       to,
@@ -490,6 +494,7 @@ async function sendServerEmail({ to, subject, html, emailType, orderId = "", cam
       html
     });
 
+    console.log(`[SMTP LOG] Email SENT successfully! Message ID: ${info.messageId}`);
     const logEntry = {
       _id: crypto.randomUUID(),
       orderId,
@@ -516,6 +521,7 @@ async function sendServerEmail({ to, subject, html, emailType, orderId = "", cam
       providerMessageId: info.messageId
     };
   } catch (err) {
+    console.error(`[SMTP LOG] Email delivery ERROR to ${to}:`, err.message);
     const logEntry = {
       _id: crypto.randomUUID(),
       orderId,
