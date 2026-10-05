@@ -539,13 +539,15 @@ async function initializeApplication() {
       console.log("[DATA SAFETY] No seed overwrite performed");
     } else {
       console.log("[DATA] No existing product found in DB. Seeding initial product record...");
-      await Product.create(fallbackProduct);
+      const { _id, ...cleanProductData } = fallbackProduct;
+      await Product.create(cleanProductData);
       console.log(`[DATA] Initial product created: Selling ₹${fallbackProduct.price}, Original ₹${fallbackProduct.originalPrice}`);
     }
 
     const couponCount = await Coupon.countDocuments();
     if (couponCount === 0) {
-      await Coupon.insertMany(fallbackCoupons);
+      const cleanCoupons = fallbackCoupons.map(({ _id, ...c }) => c);
+      await Coupon.insertMany(cleanCoupons);
       console.log("[DATA] Initial coupons created");
     } else {
       console.log(`[DATA] Existing coupons found (${couponCount}). Preserved.`);
@@ -553,7 +555,8 @@ async function initializeApplication() {
 
     const offerCount = await Offer.countDocuments();
     if (offerCount === 0) {
-      await Offer.insertMany(fallbackOffers);
+      const cleanOffers = fallbackOffers.map(({ _id, ...o }) => o);
+      await Offer.insertMany(cleanOffers);
       console.log("[DATA] Initial offers created");
     } else {
       console.log(`[DATA] Existing offers found (${offerCount}). Preserved.`);
@@ -585,7 +588,8 @@ async function ensureProduct() {
 
   const count = await Product.countDocuments();
   if (count === 0) {
-    const created = await Product.create(fallbackProduct);
+    const { _id, ...cleanProductData } = fallbackProduct;
+    const created = await Product.create(cleanProductData);
     const obj = created.toObject();
     obj.sellingPrice = obj.price;
     obj.priceSource = "DATABASE";
