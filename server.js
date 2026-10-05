@@ -1196,14 +1196,19 @@ app.patch("/api/admin/orders/:id/status", auth, async (req, res) => {
 
 app.post("/api/admin/orders/:id/resend-email", auth, async (req, res) => {
   try {
-    const reqId = String(req.params.id || "").trim();
+    const rawReqId = decodeURIComponent(String(req.params.id || "").trim());
+    const reqId = rawReqId.replace(/^#/, "");
     let order;
 
     if (dbReady) {
       const orConditions = [
         { orderId: reqId },
-        { orderId: `#${reqId.replace(/^#/, "")}` }
+        { orderId: `#${reqId}` },
+        { orderId: rawReqId }
       ];
+      if (mongoose.Types.ObjectId.isValid(rawReqId)) {
+        orConditions.push({ _id: rawReqId });
+      }
       if (mongoose.Types.ObjectId.isValid(reqId)) {
         orConditions.push({ _id: reqId });
       }
@@ -1212,18 +1217,24 @@ app.post("/api/admin/orders/:id/resend-email", auth, async (req, res) => {
 
     if (!order) {
       order = fallbackOrders.find(o => 
-        String(o._id) === reqId || 
+        String(o._id) === rawReqId || 
+        String(o._id) === reqId ||
+        String(o.orderId) === rawReqId ||
         String(o.orderId) === reqId ||
-        String(o.orderId) === `#${reqId.replace(/^#/, "")}`
+        String(o.orderId) === `#${reqId}`
       );
     }
 
-    if (!order) return res.status(404).json({ error: "Order not found" });
-    if (!order.customer?.email) return res.status(400).json({ error: "Customer email unavailable for this order" });
+    if (!order) return res.status(404).json({ error: `Order '${rawReqId}' not found` });
+
+    const customerEmail = String(order.customer?.email || order.customerEmail || order.email || "").trim();
+    if (!customerEmail || !customerEmail.includes("@")) {
+      return res.status(400).json({ error: "Customer email unavailable for this order." });
+    }
 
     const emailData = buildOrderStatusEmail(order, order.status || "Confirmed");
     const result = await sendServerEmail({
-      to: order.customer.email,
+      to: customerEmail,
       subject: emailData.subject,
       html: emailData.html,
       emailType: `ORDER_${(order.status || "CONFIRMED").toUpperCase()}`,
