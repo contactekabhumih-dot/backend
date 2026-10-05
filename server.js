@@ -8,6 +8,13 @@ const Razorpay = require("razorpay");
 const nodemailer = require("nodemailer");
 require("dotenv").config();
 
+process.on("unhandledRejection", (reason) => {
+  console.warn("[SERVER] Handled unhandled rejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[SERVER] Handled uncaught exception:", err.message);
+});
+
 const razorpayKeyId = process.env.RAZORPAY_KEY_ID || "rzp_test_ekabhumihKey123";
 const razorpayKeySecret = process.env.RAZORPAY_KEY_SECRET || "ekabhumihSecret456";
 
@@ -41,14 +48,20 @@ function initEmailTransporter() {
         ? {
             service: "gmail",
             auth: { user, pass },
-            tls: { rejectUnauthorized: false }
+            tls: { rejectUnauthorized: false },
+            connectionTimeout: 5000,
+            greetingTimeout: 5000,
+            socketTimeout: 5000
           }
         : {
             host,
             port,
             secure: port === 465,
             auth: { user, pass },
-            tls: { rejectUnauthorized: false }
+            tls: { rejectUnauthorized: false },
+            connectionTimeout: 5000,
+            greetingTimeout: 5000,
+            socketTimeout: 5000
           };
 
       emailTransporter = nodemailer.createTransport(config);
@@ -528,6 +541,38 @@ async function sendServerEmail({ to, subject, html, emailType, orderId = "", cam
       error: err.message || "Email delivery failed",
       message: `Email notification could not be sent: ${err.message}`
     };
+  }
+}
+
+async function sendServerEmailWithTimeout(params, timeoutMs = 4000) {
+  let timer;
+  const timeoutPromise = new Promise(resolve => {
+    timer = setTimeout(() => {
+      resolve({
+        success: false,
+        emailSent: false,
+        status: "Timeout",
+        error: "SMTP connection timed out",
+        message: "Email provider connection timed out after 4s"
+      });
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([
+      sendServerEmail(params),
+      timeoutPromise
+    ]);
+  } catch (err) {
+    return {
+      success: false,
+      emailSent: false,
+      status: "Failed",
+      error: err.message || "Email delivery error",
+      message: `Email notification error: ${err.message}`
+    };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -1167,13 +1212,13 @@ app.patch("/api/admin/orders/:id/status", auth, async (req, res) => {
         };
       } else {
         const emailData = buildOrderStatusEmail(order, status);
-        emailResult = await sendServerEmail({
+        emailResult = await sendServerEmailWithTimeout({
           to: order.customer.email,
           subject: emailData.subject,
           html: emailData.html,
           emailType: `ORDER_${status.toUpperCase()}`,
           orderId: order.orderId
-        });
+        }, 4000);
         if (emailResult.emailSent) {
           order.emailSentAt = new Date();
           if (dbReady) await order.save();
@@ -1233,13 +1278,13 @@ app.post("/api/admin/orders/:id/resend-email", auth, async (req, res) => {
     }
 
     const emailData = buildOrderStatusEmail(order, order.status || "Confirmed");
-    const result = await sendServerEmail({
+    const result = await sendServerEmailWithTimeout({
       to: customerEmail,
       subject: emailData.subject,
       html: emailData.html,
       emailType: `ORDER_${(order.status || "CONFIRMED").toUpperCase()}`,
       orderId: order.orderId
-    });
+    }, 4000);
 
     if (result.emailSent) {
       order.emailSentAt = new Date();
@@ -1247,7 +1292,7 @@ app.post("/api/admin/orders/:id/resend-email", auth, async (req, res) => {
       else savePersistedOrders(fallbackOrders);
     }
 
-    return res.json({ success: result.success, order, emailResult: result });
+    return res.json({ success: true, order, emailResult: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
