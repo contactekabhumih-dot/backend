@@ -1221,7 +1221,7 @@ app.patch("/api/admin/orders/:id/status", auth, async (req, res) => {
         }, 4000);
         if (emailResult.emailSent) {
           order.emailSentAt = new Date();
-          if (dbReady) await order.save();
+          if (dbReady && typeof order.save === "function") await order.save();
           else savePersistedOrders(fallbackOrders);
         }
       }
@@ -1288,7 +1288,7 @@ app.post("/api/admin/orders/:id/resend-email", auth, async (req, res) => {
 
     if (result.emailSent) {
       order.emailSentAt = new Date();
-      if (dbReady) await order.save();
+      if (dbReady && typeof order.save === "function") await order.save();
       else savePersistedOrders(fallbackOrders);
     }
 
