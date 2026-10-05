@@ -965,9 +965,10 @@ app.get(["/api/orders/my-orders", "/api/user/orders", "/api/orders/customer"], a
     const { email } = req.query;
     if (!email) return res.status(400).json({ error: "Email parameter is required." });
     const cleanEmail = String(email).trim().toLowerCase();
+    const escapedEmail = cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
     if (dbReady) {
-      const userOrders = await Order.find({ "customer.email": { $regex: new RegExp(`^${cleanEmail}$`, "i") } }).sort({ createdAt: -1 });
+      const userOrders = await Order.find({ "customer.email": { $regex: new RegExp(`^${escapedEmail}$`, "i") } }).sort({ createdAt: -1 });
       return res.json(userOrders);
     }
 
@@ -983,8 +984,9 @@ app.get("/api/orders", async (req, res) => {
     const { email } = req.query;
     if (email) {
       const cleanEmail = String(email).trim().toLowerCase();
+      const escapedEmail = cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       if (dbReady) {
-        const userOrders = await Order.find({ "customer.email": { $regex: new RegExp(`^${cleanEmail}$`, "i") } }).sort({ createdAt: -1 });
+        const userOrders = await Order.find({ "customer.email": { $regex: new RegExp(`^${escapedEmail}$`, "i") } }).sort({ createdAt: -1 });
         return res.json(userOrders);
       }
       const userOrders = fallbackOrders.filter(o => String(o.customer?.email || "").trim().toLowerCase() === cleanEmail);
@@ -1098,16 +1100,18 @@ app.patch("/api/admin/orders/:id/status", auth, async (req, res) => {
     let order;
 
     if (dbReady) {
+      const orConditions = [
+        { orderId: reqId },
+        { orderId: `#${reqId.replace(/^#/, "")}` }
+      ];
       if (mongoose.Types.ObjectId.isValid(reqId)) {
-        order = await Order.findByIdAndUpdate(reqId, { status }, { new: true });
+        orConditions.push({ _id: reqId });
       }
-      if (!order) {
-        order = await Order.findOneAndUpdate(
-          { $or: [{ orderId: reqId }, { orderId: `#${reqId.replace(/^#/, "")}` }, { _id: reqId }] },
-          { status },
-          { new: true }
-        );
-      }
+      order = await Order.findOneAndUpdate(
+        { $or: orConditions },
+        { status },
+        { new: true }
+      );
     }
 
     if (!order) {
@@ -1169,14 +1173,14 @@ app.post("/api/admin/orders/:id/resend-email", auth, async (req, res) => {
     let order;
 
     if (dbReady) {
+      const orConditions = [
+        { orderId: reqId },
+        { orderId: `#${reqId.replace(/^#/, "")}` }
+      ];
       if (mongoose.Types.ObjectId.isValid(reqId)) {
-        order = await Order.findById(reqId);
+        orConditions.push({ _id: reqId });
       }
-      if (!order) {
-        order = await Order.findOne({
-          $or: [{ orderId: reqId }, { orderId: `#${reqId.replace(/^#/, "")}` }, { _id: reqId }]
-        });
-      }
+      order = await Order.findOne({ $or: orConditions });
     }
 
     if (!order) {
