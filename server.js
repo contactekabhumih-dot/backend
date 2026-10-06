@@ -988,7 +988,7 @@ app.post("/api/admin/login", (req, res) => {
   const isEmailMatch = inputEmail === configuredEmail || inputEmail === "contact.ekabhumih@gmail.com" || inputEmail === "admin@ekabhumih.com";
 
   if (!isEmailMatch || password !== validPassword) {
-    return res.status(401).json({ error: "Invalid admin credentials. Use contact.ekabhumih@gmail.com / admin123password" });
+    return res.status(401).json({ error: "Invalid admin credentials" });
   }
   const token = generateAdminToken(inputEmail);
   sessions.add(token);
