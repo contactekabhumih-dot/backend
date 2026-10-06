@@ -36,43 +36,44 @@ let lastEmailFailed = null;
 
 function initEmailTransporter() {
   const host = process.env.EMAIL_HOST || "smtp.gmail.com";
-  const port = Number(process.env.EMAIL_PORT || 587);
   const user = process.env.EMAIL_USER || "contact.ekabhumih@gmail.com";
   const rawPass = process.env.EMAIL_PASSWORD || "";
   const pass = rawPass ? rawPass.replace(/\s+/g, "") : "";
 
-  if (host && user && pass) {
+  if (user && pass) {
     try {
-      const isGmail = host.includes("gmail");
+      const isGmail = host.includes("gmail") || user.endsWith("@gmail.com");
       const config = isGmail
         ? {
-            service: "gmail",
+            host: "smtp.gmail.com",
+            port: 465,
+            secure: true,
             auth: { user, pass },
             tls: { rejectUnauthorized: false },
-            connectionTimeout: 5000,
-            greetingTimeout: 5000,
-            socketTimeout: 5000
+            connectionTimeout: 8000,
+            greetingTimeout: 8000,
+            socketTimeout: 8000
           }
         : {
             host,
-            port,
-            secure: port === 465,
+            port: Number(process.env.EMAIL_PORT || 587),
+            secure: Number(process.env.EMAIL_PORT) === 465,
             auth: { user, pass },
             tls: { rejectUnauthorized: false },
-            connectionTimeout: 5000,
-            greetingTimeout: 5000,
-            socketTimeout: 5000
+            connectionTimeout: 8000,
+            greetingTimeout: 8000,
+            socketTimeout: 8000
           };
 
       emailTransporter = nodemailer.createTransport(config);
       isEmailConfigured = true;
-      console.log(`[SMTP] Email Transporter initialized for (${user})`);
+      console.log(`[SMTP] Email Transporter initialized for (${user}) via port ${config.port} (secure: ${config.secure})`);
 
       emailTransporter.verify((error, success) => {
         if (error) {
           console.warn("[SMTP] Nodemailer verification warning:", error.message);
         } else {
-          console.log("[SMTP] Email Server ready to send messages!");
+          console.log("[SMTP] Email Server verified & ready to send messages!");
         }
       });
     } catch (err) {
@@ -81,7 +82,7 @@ function initEmailTransporter() {
     }
   } else {
     isEmailConfigured = false;
-    console.log("[SMTP] EMAIL_PASSWORD or EMAIL_USER missing in .env. Email status: NOT_CONFIGURED.");
+    console.log("[SMTP] EMAIL_PASSWORD or EMAIL_USER missing in environment variables. Email status: NOT_CONFIGURED.");
   }
 }
 initEmailTransporter();
@@ -550,7 +551,7 @@ async function sendServerEmail({ to, subject, html, emailType, orderId = "", cam
   }
 }
 
-async function sendServerEmailWithTimeout(params, timeoutMs = 4000) {
+async function sendServerEmailWithTimeout(params, timeoutMs = 8000) {
   let timer;
   const timeoutPromise = new Promise(resolve => {
     timer = setTimeout(() => {
@@ -559,7 +560,7 @@ async function sendServerEmailWithTimeout(params, timeoutMs = 4000) {
         emailSent: false,
         status: "Timeout",
         error: "SMTP connection timed out",
-        message: "Email provider connection timed out after 4s"
+        message: "Email provider connection timed out after 8s"
       });
     }, timeoutMs);
   });
@@ -1224,7 +1225,7 @@ app.patch("/api/admin/orders/:id/status", auth, async (req, res) => {
           html: emailData.html,
           emailType: `ORDER_${status.toUpperCase()}`,
           orderId: order.orderId
-        }, 4000);
+        }, 8000);
         if (emailResult.emailSent) {
           order.emailSentAt = new Date();
           if (dbReady && typeof order.save === "function") await order.save();
@@ -1290,7 +1291,7 @@ app.post("/api/admin/orders/:id/resend-email", auth, async (req, res) => {
       html: emailData.html,
       emailType: `ORDER_${(order.status || "CONFIRMED").toUpperCase()}`,
       orderId: order.orderId
-    }, 4000);
+    }, 8000);
 
     if (result.emailSent) {
       order.emailSentAt = new Date();
