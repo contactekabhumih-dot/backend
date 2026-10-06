@@ -1244,29 +1244,19 @@ app.patch("/api/admin/orders/:id/status", auth, async (req, res) => {
         };
       } else {
         const emailData = buildOrderStatusEmail(order, status);
-        emailResult = {
-          success: true,
-          emailSent: true,
-          status: "Sent",
-          message: `Notification email for status '${status}' is being sent to ${order.customer.email}`
-        };
-
-        // Dispatch email notification asynchronously in background
-        sendServerEmailWithTimeout({
+        emailResult = await sendServerEmailWithTimeout({
           to: order.customer.email,
           subject: emailData.subject,
           html: emailData.html,
           emailType: `ORDER_${status.toUpperCase()}`,
           orderId: order.orderId
-        }, 10000).then(res => {
-          if (res && res.emailSent) {
-            order.emailSentAt = new Date();
-            if (dbReady && typeof order.save === "function") order.save().catch(() => {});
-            else savePersistedOrders(fallbackOrders);
-          }
-        }).catch(err => {
-          console.warn("[BG EMAIL DISPATCH ERROR]", err.message);
-        });
+        }, 4500);
+
+        if (emailResult && emailResult.emailSent) {
+          order.emailSentAt = new Date();
+          if (dbReady && typeof order.save === "function") await order.save().catch(() => {});
+          else savePersistedOrders(fallbackOrders);
+        }
       }
     } else {
       emailResult = {
@@ -1321,33 +1311,21 @@ app.post("/api/admin/orders/:id/resend-email", auth, async (req, res) => {
     }
 
     const emailData = buildOrderStatusEmail(order, order.status || "Confirmed");
-    
-    // Immediately respond to the client so UI does not freeze or timeout
-    const immediateResult = {
-      success: true,
-      emailSent: true,
-      status: "Sent",
-      message: `Resend order email notification dispatched to ${customerEmail}`
-    };
-
-    // Dispatch email notification in background
-    sendServerEmailWithTimeout({
+    const result = await sendServerEmailWithTimeout({
       to: customerEmail,
       subject: emailData.subject,
       html: emailData.html,
       emailType: `ORDER_${(order.status || "CONFIRMED").toUpperCase()}`,
       orderId: order.orderId
-    }, 10000).then(res => {
-      if (res && res.emailSent) {
-        order.emailSentAt = new Date();
-        if (dbReady && typeof order.save === "function") order.save().catch(() => {});
-        else savePersistedOrders(fallbackOrders);
-      }
-    }).catch(err => {
-      console.warn("[BG RESEND EMAIL ERROR]", err.message);
-    });
+    }, 4500);
 
-    return res.json({ success: true, order, emailResult: immediateResult });
+    if (result && result.emailSent) {
+      order.emailSentAt = new Date();
+      if (dbReady && typeof order.save === "function") await order.save().catch(() => {});
+      else savePersistedOrders(fallbackOrders);
+    }
+
+    return res.json({ success: true, order, emailResult: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
