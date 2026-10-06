@@ -456,6 +456,43 @@ async function sendServerEmail({ to, subject, html, emailType, orderId = "", cam
     };
   }
 
+  // HTTPS REST API via Brevo if BREVO_API_KEY is available (bypasses cloud SMTP port blocking)
+  if (process.env.BREVO_API_KEY) {
+    try {
+      console.log(`[HTTP EMAIL LOG] Sending via Brevo HTTPS API to ${to}...`);
+      const match = fromAddress.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
+      const senderName = (match ? match[1] : "Eka Bhūmih").trim() || "Eka Bhūmih";
+      const senderEmail = (match ? match[2] : process.env.EMAIL_USER || "contact.ekabhumih@gmail.com").trim();
+      const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          "api-key": process.env.BREVO_API_KEY,
+          "Content-Type": "application/json",
+          "accept": "application/json"
+        },
+        body: JSON.stringify({
+          sender: { name: senderName, email: senderEmail },
+          to: [{ email: to }],
+          subject,
+          htmlContent: html
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && data.messageId) {
+        console.log(`[HTTP EMAIL LOG] Sent via Brevo API! ID: ${data.messageId}`);
+        if (dbReady) await EmailLog.create({ orderId, campaignId, recipientEmail: to, emailType, subject, status: "Sent", providerMessageId: data.messageId }).catch(() => {});
+        lastEmailSuccess = { time: new Date().toISOString(), to, messageId: data.messageId };
+        return { success: true, emailSent: true, status: "Sent", message: "Email accepted by Brevo", providerMessageId: data.messageId };
+      }
+      const errMsg = `Brevo API error ${response.status}: ${data.message || JSON.stringify(data)}`;
+      console.warn("[HTTP EMAIL LOG]", errMsg);
+      lastEmailFailed = { time: new Date().toISOString(), to, error: errMsg };
+      return { success: false, emailSent: false, status: "Failed", error: errMsg, message: errMsg };
+    } catch (err) {
+      console.warn("[HTTP EMAIL LOG] Brevo API notice:", err.message);
+    }
+  }
+
   // HTTPS REST API via Resend if RESEND_API_KEY is available (bypasses cloud SMTP port blocking 100%)
   if (process.env.RESEND_API_KEY) {
     try {
@@ -585,7 +622,7 @@ async function sendServerEmailWithTimeout(params, timeoutMs = 8000) {
         emailSent: false,
         status: "Timeout",
         error: "SMTP connection timed out",
-        message: "Email provider connection timed out after 8s"
+        message: `Email provider connection timed out after ${Math.round(timeoutMs / 1000)}s. Render blocks SMTP; set BREVO_API_KEY to send over HTTPS.`
       });
     }, timeoutMs);
   });
